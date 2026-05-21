@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CricPlay – Multiplayer Cricket Simulator</title>
+  <meta name="description" content="Create rooms, pick IPL teams, build Playing XIs, and simulate T20 matches with AI commentary." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="bg-particles" id="bgParticles"></div>
+
+  <!-- HEADER -->
+  <header class="header">
+    <div class="header-inner">
+      <div class="logo" onclick="showScreen('landing')">
+        <div class="logo-icon">🏏</div>
+        <div class="logo-text"><h1>CricPlay</h1><span class="logo-subtitle">Multiplayer Cricket Simulator</span></div>
+      </div>
+      <div class="header-right">
+        <span class="room-badge" id="roomBadge" style="display:none;">Room: <strong id="roomCodeDisplay"></strong></span>
+        <span class="player-badge" id="playerBadge" style="display:none;"></span>
+      </div>
+    </div>
+  </header>
+
+  <main class="main-content">
+    <!-- ═══ SCREEN: LANDING ═══ -->
+    <div class="screen active" id="screenLanding">
+      <div class="landing-hero">
+        <div class="hero-icon">🏏</div>
+        <h2 class="hero-title">Welcome to <span class="accent-text">CricPlay</span></h2>
+        <p class="hero-desc">Upload IPL squad screenshots, pick your team, build your Playing XI, and simulate full T20 matches with AI-powered over-by-over commentary.</p>
+        <div class="landing-actions">
+          <div class="input-group">
+            <label for="landingName">Your Name</label>
+            <input type="text" id="landingName" placeholder="Enter your name" autocomplete="off" />
+          </div>
+          <div class="landing-btns">
+            <button class="btn btn-primary btn-lg" id="btnCreateRoom">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+              Create Room
+            </button>
+            <button class="btn btn-secondary btn-lg" id="btnShowJoin">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4M10 17l5-5-5-5M15 12H3"/></svg>
+              Join Room
+            </button>
+          </div>
+          <div class="join-panel" id="joinPanel" style="display:none;">
+            <div class="input-group">
+              <label for="joinCode">Room Code</label>
+              <input type="text" id="joinCode" placeholder="e.g. ABC123" maxlength="6" style="text-transform:uppercase;" />
+            </div>
+            <button class="btn btn-primary" id="btnJoinRoom">Join</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ SCREEN: CREATE ROOM ═══ -->
+    <div class="screen" id="screenCreate">
+      <div class="section">
+        <div class="section-header">
+          <div class="step-badge">1</div>
+          <div><h2>Create Room</h2><p class="section-desc">Upload squad screenshots and configure the game.</p></div>
+        </div>
+        <div class="config-row">
+          <div class="input-group">
+            <label for="geminiKey">Gemini API Key</label>
+            <input type="password" id="geminiKey" placeholder="Enter your Gemini API key" />
+          </div>
+        </div>
+        <div class="upload-zone" id="uploadZone">
+          <input type="file" id="imageInput" accept="image/*" multiple />
+          <div class="upload-icon"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></div>
+          <p class="upload-text">Drag & drop team squad images here</p>
+          <p class="upload-hint">Upload one screenshot per team • Multiple images</p>
+        </div>
+        <div class="image-previews" id="imagePreviews"></div>
+        <div class="ocr-progress" id="ocrProgress" style="display:none;">
+          <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+          <p class="progress-text" id="progressText">Initializing...</p>
+        </div>
+        <!-- Extracted teams preview -->
+        <div class="extracted-teams" id="extractedTeams" style="display:none;">
+          <h3>Extracted Teams</h3>
+          <div class="teams-grid" id="teamsGrid"></div>
+        </div>
+        <button class="btn btn-primary btn-lg btn-extract" id="btnExtract" style="display:none;">Extract Teams & Create Room</button>
+      </div>
+    </div>
+
+    <!-- ═══ SCREEN: LOBBY ═══ -->
+    <div class="screen" id="screenLobby">
+      <div class="section lobby-section">
+        <div class="lobby-code-card">
+          <p class="lobby-label">Share this code with friends</p>
+          <div class="code-display" id="lobbyCode">------</div>
+          <button class="btn btn-secondary btn-small" id="btnCopyCode">Copy Code</button>
+        </div>
+        <div class="lobby-players">
+          <h3>Players in Room</h3>
+          <div class="players-list" id="lobbyPlayersList"></div>
+        </div>
+        <button class="btn btn-primary btn-lg" id="btnStartGame" style="display:none;">Start Game →</button>
+      </div>
+    </div>
+
+    <!-- ═══ SCREEN: TEAM SELECT ═══ -->
+    <div class="screen" id="screenTeamSelect">
+      <div class="section">
+        <div class="section-header">
+          <div class="step-badge">2</div>
+          <div><h2>Choose Your Team</h2><p class="section-desc">Click a team to claim it. Each player picks one team.</p></div>
+        </div>
+        <div class="team-cards" id="teamCards"></div>
+        <button class="btn btn-primary btn-lg" id="btnConfirmTeams" style="display:none;">Lock Teams & Build Squads →</button>
+      </div>
+    </div>
+
+    <!-- ═══ SCREEN: SQUAD BUILD ═══ -->
+    <div class="screen" id="screenSquadBuild">
+      <div class="section">
+        <div class="section-header">
+          <div class="step-badge">3</div>
+          <div><h2>Build Your Playing XI</h2><p class="section-desc">Select 11 players for your XI and up to 3 impact subs.</p></div>
+        </div>
+        <div class="squad-stats" id="squadStats2">
+          <div class="stat-card"><span class="stat-value" id="sbTotal">0</span><span class="stat-label">Total</span></div>
+          <div class="stat-card accent"><span class="stat-value" id="sbXI">0</span><span class="stat-label">Playing XI</span></div>
+          <div class="stat-card impact"><span class="stat-value" id="sbImpact">0</span><span class="stat-label">Impact</span></div>
+        </div>
+        <div class="pool-container">
+          <div class="pool-header"><h3>Squad Pool</h3><input type="text" class="search-input" id="sbSearch" placeholder="Search..." /></div>
+          <div class="player-pool" id="sbPool"></div>
+        </div>
+        <div class="lineup-grid">
+          <div class="lineup-panel playing-xi-panel">
+            <div class="panel-header"><h3>⚡ Playing XI</h3><span class="panel-count"><span id="sbXICount">0</span>/11</span></div>
+            <div class="lineup-slots" id="sbXISlots"></div>
+          </div>
+          <div class="lineup-panel impact-panel">
+            <div class="panel-header"><h3>🔄 Impact Subs</h3><span class="panel-count"><span id="sbImpCount">0</span>/3</span></div>
+            <div class="lineup-slots" id="sbImpSlots"></div>
+          </div>
+        </div>
+        <button class="btn btn-primary btn-lg" id="btnSubmitSquad">Lock Squad & Ready Up ✓</button>
+        <div class="waiting-others" id="waitingOthers" style="display:none;">
+          <div class="spinner"></div>
+          <p>Waiting for other players to finalize squads...</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ SCREEN: MATCH DAY ═══ -->
+    <div class="screen" id="screenMatch">
+      <div class="match-layout">
+        <!-- Sidebar: Schedule + Points Table -->
+        <aside class="match-sidebar">
+          <div class="sidebar-section">
+            <h3>📊 Points Table</h3>
+            <div id="pointsTableContainer"></div>
+          </div>
+          <div class="sidebar-section">
+            <h3>📅 Schedule</h3>
+            <div id="scheduleContainer"></div>
+          </div>
+        </aside>
+        <!-- Main match area -->
+        <div class="match-main">
+          <!-- Toss -->
+          <div class="match-phase" id="phaseToss" style="display:none;">
+            <div class="toss-card">
+              <h2 id="matchHeader"></h2>
+              <p class="match-venue" id="matchVenue"></p>
+              <div class="toss-result" id="tossResult"></div>
+              <div class="lineup-edit" id="lineupEdit" style="display:none;">
+                <h3>📝 Adjust Your XI (Post-Toss)</h3>
+                <p class="section-desc">Swap players based on toss result & conditions</p>
+                <div class="lineup-slots" id="tossXISlots"></div>
+                <button class="btn btn-primary" id="btnConfirmLineup">Confirm Lineup</button>
+              </div>
+              <div class="waiting-others" id="waitingToss" style="display:none;">
+                <div class="spinner"></div><p>Waiting for opponent to confirm lineup...</p>
+              </div>
+            </div>
+          </div>
+          <!-- Live Match -->
+          <div class="match-phase" id="phaseLive" style="display:none;">
+            <div class="scoreboard" id="scoreboard">
+              <div class="score-team" id="scoreTeamA"></div>
+              <div class="score-vs">vs</div>
+              <div class="score-team" id="scoreTeamB"></div>
+            </div>
+            <div class="innings-label" id="inningsLabel"></div>
+            <div class="commentary-feed" id="commentaryFeed"></div>
+          </div>
+          <!-- Innings Break -->
+          <div class="match-phase" id="phaseBreak" style="display:none;">
+            <div class="break-card">
+              <h2>🔄 Innings Break</h2>
+              <div class="break-score" id="breakScore"></div>
+              <div class="impact-activation" id="impactActivation">
+                <h3>Activate Impact Sub</h3>
+                <p class="section-desc">Choose a player from your XI to replace with an impact sub</p>
+                <div class="impact-swap" id="impactSwap"></div>
+              </div>
+              <button class="btn btn-primary" id="btnConfirmImpact">Confirm & Start 2nd Innings</button>
+              <div class="waiting-others" id="waitingImpact" style="display:none;">
+                <div class="spinner"></div><p>Waiting for opponent...</p>
+              </div>
+            </div>
+          </div>
+          <!-- Match Result -->
+          <div class="match-phase" id="phaseResult" style="display:none;">
+            <div class="result-card">
+              <h2 id="resultText"></h2>
+              <div class="result-scores" id="resultScores"></div>
+              <button class="btn btn-primary btn-lg" id="btnNextMatch" style="display:none;">Next Match →</button>
+            </div>
+          </div>
+          <!-- Tournament Complete -->
+          <div class="match-phase" id="phaseTournament" style="display:none;">
+            <div class="trophy-card">
+              <div class="trophy-icon">🏆</div>
+              <h2>Tournament Champion</h2>
+              <h1 class="winner-name" id="winnerName"></h1>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <div class="toast-container" id="toastContainer"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="client.js"></script>
+  <script src="match.js"></script>
+</body>
+</html>
