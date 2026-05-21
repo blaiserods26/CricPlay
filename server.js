@@ -93,7 +93,7 @@ function getSortedTable(table) {
 }
 
 // ─── Gemini Match Simulation ───
-async function simulateInnings(room, battingTeam, bowlingTeam, ground, target, inningsNum, matchContext) {
+async function simulateInnings(room, battingTeam, bowlingTeam, ground, target, inningsNum, matchContext, startOver, endOver) {
   const ai = new GoogleGenAI({ apiKey: room.geminiKey });
 
   const battingInfo = room.players[room.teamOwners[battingTeam]];
@@ -115,28 +115,38 @@ ${bowlingTeam} (Bowling):
 ${bowlingXI}
 ${targetLine}${contextLine}
 
-Simulate this innings OVER BY OVER (20 overs max or until all out).
-For EACH over, output EXACTLY this format (no extra text between overs):
-
----OVER---
-{"over":1,"bowler":"Name","batter":"Name","nonStriker":"Name","balls":["0","1","4","W","2","6"],"wicketDesc":"","runsScoredThisOver":13,"totalScore":"13/1","totalOvers":"1.0","commentary":"One paragraph of exciting commentary for this over."}
----END---
+Simulate overs ${startOver} to ${endOver} OVER BY OVER (or until all out / target reached).
+Return ONLY a valid JSON array of objects. Each object represents one over and MUST have EXACTLY these keys:
+{
+  "over": ${startOver},
+  "bowler": "Name",
+  "batter": "Name",
+  "nonStriker": "Name",
+  "balls": ["0","1","4","W","2","6"],
+  "wicketDesc": "",
+  "runsScoredThisOver": 13,
+  "totalScore": "13/1",
+  "totalOvers": "${startOver}.0",
+  "commentary": "One paragraph of exciting commentary for this over."
+}
 
 Rules:
-- Make it realistic. Top-order batsmen score more, tailenders struggle.
-- Wickets should fall naturally. Include bowled, caught, LBW, run out etc.
+- Realistic simulation. Top-order batsmen score more, tailenders struggle.
+- Wickets fall naturally (bowled, caught, LBW, run out etc).
 - When a wicket falls, wicketDesc should describe how (e.g. "Kohli caught at slip by Jadeja off Bumrah").
 - Track batting order properly. When a wicket falls, next batter comes in.
 - If all 10 wickets fall, the innings ends early.
 - If chasing and target is reached, end the innings immediately.
 - Keep running total accurate across overs.
-- Commentary should be engaging, dramatic, and reference real player playing styles.
-- Output ONLY the over blocks, nothing else before or after.`;
+- Output MUST be a valid JSON array, nothing else.`;
 
   try {
     const result = await ai.models.generateContent({
       model: 'gemini-2.0-flash',
       contents: prompt,
+      config: {
+        responseMimeType: 'application/json',
+      }
     });
     return result.text;
   } catch (err) {
@@ -146,22 +156,17 @@ Rules:
 }
 
 function parseInningsResult(rawText) {
-  const overs = [];
-  const blocks = rawText.split('---OVER---').filter(Boolean);
-  for (const block of blocks) {
-    const jsonMatch = block.match(/\{[\s\S]*?\}/);
-    if (jsonMatch) {
-      try {
-        const data = JSON.parse(jsonMatch[0]);
-        overs.push(data);
-      } catch (e) { /* skip malformed */ }
-    }
+  try {
+    const overs = JSON.parse(rawText);
+    const last = overs[overs.length - 1];
+    const score = last ? last.totalScore : '0/0';
+    const [runs, wickets] = (score || '0/0').split('/').map(Number);
+    const oversCount = last ? parseFloat(last.totalOvers) : 0;
+    return { overs, runs, wickets, oversCount, score };
+  } catch (e) {
+    console.error('JSON parsing failed. Raw text:', rawText);
+    return { overs: [], runs: 0, wickets: 0, oversCount: 0, score: '0/0' };
   }
-  const last = overs[overs.length - 1];
-  const score = last ? last.totalScore : '0/0';
-  const [runs, wickets] = (score || '0/0').split('/').map(Number);
-  const oversCount = last ? parseFloat(last.totalOvers) : 0;
-  return { overs, runs, wickets, oversCount, score };
 }
 
 // ─── Socket.IO Events ───
@@ -391,52 +396,78 @@ async function startInnings(code, inningsNum) {
   const battingTeam = inningsNum === 1 ? match.battingFirst : match.bowlingFirst;
   const bowlingTeam = inningsNum === 1 ? match.bowlingFirst : match.battingFirst;
   const target = inningsNum === 2 ? (match.innings1Runs + 1) : null;
-  const context = inningsNum === 2 ? `${match.bowlingFirst} scored ${match.innings1Score} in the 1st innings.` : '';
-
+  
   io.to(code).emit('innings-start', { inningsNum, battingTeam, bowlingTeam, target });
 
-  const raw = await simulateInnings(room, battingTeam, bowlingTeam, match.ground, target, inningsNum, context);
+  let allOvers = [];
+  let currentScoreStr = '0/0';
+  let currentRuns = 0;
+  let currentWickets = 0;
+  let currentOversCount = 0;
 
-  if (!raw) {
-    io.to(code).emit('error-msg', 'Gemini API failed. Check your API key.');
-    return;
-  }
+  for (let chunk = 0; chunk < 2; chunk++) {
+    const startOver = chunk * 10 + 1;
+    const endOver = startOver + 9;
+    
+    let context = inningsNum === 2 ? `${match.bowlingFirst} scored ${match.innings1Score} in the 1st innings.` : '';
+    if (chunk > 0) {
+      context += `\nCurrently at the end of over ${startOver-1}, score is ${currentScoreStr}. Continue simulating from over ${startOver}.`;
+    }
 
-  const result = parseInningsResult(raw);
+    const raw = await simulateInnings(room, battingTeam, bowlingTeam, match.ground, target, inningsNum, context, startOver, endOver);
 
-  // Stream overs to clients one by one with delay
-  for (let i = 0; i < result.overs.length; i++) {
-    io.to(code).emit('over-update', { inningsNum, over: result.overs[i], overIndex: i, totalOvers: result.overs.length });
-    await sleep(1500); // 1.5s between overs for dramatic effect
+    if (!raw) {
+      io.to(code).emit('error-msg', 'Gemini API failed. Check your API key.');
+      return;
+    }
+
+    const result = parseInningsResult(raw);
+    if (!result || result.overs.length === 0) break;
+
+    // Stream overs to clients one by one with delay
+    for (let i = 0; i < result.overs.length; i++) {
+      io.to(code).emit('over-update', { inningsNum, over: result.overs[i], overIndex: allOvers.length, totalOvers: '20' });
+      await sleep(1500); // 1.5s between overs for dramatic effect
+      allOvers.push(result.overs[i]);
+    }
+
+    currentScoreStr = result.score;
+    currentRuns = result.runs;
+    currentWickets = result.wickets;
+    currentOversCount = result.oversCount;
+
+    if (currentWickets >= 10 || (target && currentRuns >= target)) {
+      break;
+    }
   }
 
   if (inningsNum === 1) {
-    match.innings1Runs = result.runs;
-    match.innings1Wickets = result.wickets;
-    match.innings1Overs = result.oversCount;
-    match.innings1Score = result.score;
+    match.innings1Runs = currentRuns;
+    match.innings1Wickets = currentWickets;
+    match.innings1Overs = currentOversCount;
+    match.innings1Score = currentScoreStr;
     // Innings break - impact sub activation
     io.to(code).emit('innings-break', {
       inningsNum: 1,
-      score: result.score,
+      score: currentScoreStr,
       battingTeam,
       bowlingTeam,
     });
   } else {
-    match.innings2Runs = result.runs;
-    match.innings2Wickets = result.wickets;
-    match.innings2Overs = result.oversCount;
-    match.innings2Score = result.score;
+    match.innings2Runs = currentRuns;
+    match.innings2Wickets = currentWickets;
+    match.innings2Overs = currentOversCount;
+    match.innings2Score = currentScoreStr;
     // Determine winner
     let winner, loser, resultText;
-    if (result.runs >= match.innings1Runs + 1) {
+    if (currentRuns >= match.innings1Runs + 1) {
       winner = battingTeam;
       loser = bowlingTeam;
-      resultText = `${winner} won by ${10 - result.wickets} wickets`;
-    } else if (result.runs < match.innings1Runs) {
+      resultText = `${winner} won by ${10 - currentWickets} wickets`;
+    } else if (currentRuns < match.innings1Runs) {
       winner = bowlingTeam;
       loser = battingTeam;
-      resultText = `${winner} won by ${match.innings1Runs - result.runs} runs`;
+      resultText = `${winner} won by ${match.innings1Runs - currentRuns} runs`;
     } else {
       // Tie - for simplicity, random super over winner
       winner = Math.random() > 0.5 ? battingTeam : bowlingTeam;
