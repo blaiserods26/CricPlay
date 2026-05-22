@@ -1,5 +1,5 @@
 const { GoogleGenAI } = require('@google/genai');
-const ai = new GoogleGenAI({ apiKey: 'mock_key' });
+const ai = new GoogleGenAI({ apiKey: 'AIzaSyBG_OZCwRiYrjUCo8wP0mIIsY-vvokLFwI' });
 console.log('Instantiated successfully');
 try {
   ai.models.generateContent({
