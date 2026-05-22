@@ -2,7 +2,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
-const { GoogleGenAI } = require('@google/genai');
+// GoogleGenAI import removed for offline simulation
 
 const app = express();
 app.use(cors());
@@ -61,10 +61,16 @@ function generateSchedule(teamNames) {
   return matches;
 }
 
+function getDecimalOvers(oversCount) {
+  const completedOvers = Math.floor(oversCount);
+  const remainingBalls = Math.round((oversCount - completedOvers) * 10);
+  return completedOvers + (remainingBalls / 6);
+}
+
 function initPointsTable(teamNames) {
   const table = {};
   teamNames.forEach(t => {
-    table[t] = { played: 0, won: 0, lost: 0, nr: 0, pts: 0, nrr: 0, forRuns: 0, forOvers: 0, againstRuns: 0, againstOvers: 0 };
+    table[t] = { played: 0, won: 0, lost: 0, nr: 0, pts: 0, nrr: 0, forRuns: 0, forOversDecimal: 0, againstRuns: 0, againstOversDecimal: 0 };
   });
   return table;
 }
@@ -73,15 +79,27 @@ function updatePointsTable(table, winner, loser, winScore, loseScore) {
   if (!table[winner] || !table[loser]) return;
   table[winner].played++; table[winner].won++; table[winner].pts += 2;
   table[loser].played++; table[loser].lost++;
-  // NRR calculation
-  table[winner].forRuns += winScore.runs; table[winner].forOvers += winScore.overs;
-  table[winner].againstRuns += loseScore.runs; table[winner].againstOvers += loseScore.overs;
-  table[loser].forRuns += loseScore.runs; table[loser].forOvers += loseScore.overs;
-  table[loser].againstRuns += winScore.runs; table[loser].againstOvers += winScore.overs;
+  
+  // NRR logic: if a team is all out, count full 20 overs.
+  const winOversCounted = winScore.allOut ? 20 : winScore.overs;
+  const loseOversCounted = loseScore.allOut ? 20 : loseScore.overs;
+
+  table[winner].forRuns += winScore.runs;
+  table[winner].forOversDecimal += getDecimalOvers(winOversCounted);
+  
+  table[winner].againstRuns += loseScore.runs;
+  table[winner].againstOversDecimal += getDecimalOvers(loseOversCounted);
+  
+  table[loser].forRuns += loseScore.runs;
+  table[loser].forOversDecimal += getDecimalOvers(loseOversCounted);
+  
+  table[loser].againstRuns += winScore.runs;
+  table[loser].againstOversDecimal += getDecimalOvers(winOversCounted);
+
   // Recalculate NRR for both
   [winner, loser].forEach(t => {
-    if (table[t].forOvers > 0 && table[t].againstOvers > 0) {
-      table[t].nrr = (table[t].forRuns / table[t].forOvers) - (table[t].againstRuns / table[t].againstOvers);
+    if (table[t].forOversDecimal > 0 && table[t].againstOversDecimal > 0) {
+      table[t].nrr = (table[t].forRuns / table[t].forOversDecimal) - (table[t].againstRuns / table[t].againstOversDecimal);
     }
   });
 }
@@ -92,67 +110,397 @@ function getSortedTable(table) {
     .sort((a, b) => b.pts - a.pts || b.nrr - a.nrr);
 }
 
-// ─── Gemini Match Simulation ───
-async function simulateInnings(room, battingTeam, bowlingTeam, ground, target, inningsNum, matchContext, startOver, endOver) {
-  const ai = new GoogleGenAI({ apiKey: room.geminiKey });
-
-  const battingInfo = room.players[room.teamOwners[battingTeam]];
-  const bowlingInfo = room.players[room.teamOwners[bowlingTeam]];
-  if (!battingInfo || !bowlingInfo) return null;
-
-  const battingXI = battingInfo.xi.map((p, i) => `${i + 1}. ${p}`).join('\n');
-  const bowlingXI = bowlingInfo.xi.map((p, i) => `${i + 1}. ${p}`).join('\n');
-
-  const targetLine = target ? `\nTarget: ${target} runs. Required Run Rate: ${(target / 20).toFixed(2)}` : '';
-  const contextLine = matchContext ? `\nMatch Context: ${matchContext}` : '';
-
-  const prompt = `You are simulating a realistic T20 IPL cricket match, innings ${inningsNum}.
-Ground: ${ground}
-${battingTeam} (Batting):
-${battingXI}
-
-${bowlingTeam} (Bowling):
-${bowlingXI}
-${targetLine}${contextLine}
-
-Simulate overs ${startOver} to ${endOver} OVER BY OVER (or until all out / target reached).
-Return ONLY a valid JSON array of objects. Each object represents one over and MUST have EXACTLY these keys:
-{
-  "over": ${startOver},
-  "bowler": "Name",
-  "batter": "Name",
-  "nonStriker": "Name",
-  "balls": ["0","1","4","W","2","6"],
-  "wicketDesc": "",
-  "runsScoredThisOver": 13,
-  "totalScore": "13/1",
-  "totalOvers": "${startOver}.0",
-  "commentary": "One paragraph of exciting commentary for this over."
+// ─── Procedural Player Stats Generator ───
+function hashCode(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = str.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return Math.abs(hash);
 }
 
-Rules:
-- Realistic simulation. Top-order batsmen score more, tailenders struggle.
-- Wickets fall naturally (bowled, caught, LBW, run out etc).
-- When a wicket falls, wicketDesc should describe how (e.g. "Kohli caught at slip by Jadeja off Bumrah").
-- Track batting order properly. When a wicket falls, next batter comes in.
-- If all 10 wickets fall, the innings ends early.
-- If chasing and target is reached, end the innings immediately.
-- Keep running total accurate across overs.
-- Output MUST be a valid JSON array, nothing else.`;
-
-  try {
-    const result = await ai.models.generateContent({
-      model: 'gemini-2.0-flash',
-      contents: prompt,
-      config: {
-        responseMimeType: 'application/json',
-      }
-    });
-    return result.text;
-  } catch (err) {
-    console.error('Gemini API error:', err.message);
-    return null;
+function getPlayerStats(name, index) {
+  const seed = (hashCode(name) % 1000) / 1000;
+  if (index < 5) {
+    return {
+      name,
+      battingRating: Math.floor(80 + seed * 16),
+      bowlingRating: Math.floor(10 + seed * 15),
+      role: 'Batsman',
+      bowlingStyle: 'None'
+    };
+  } else if (index === 5 || index === 6) {
+    return {
+      name,
+      battingRating: Math.floor(70 + seed * 15),
+      bowlingRating: Math.floor(70 + seed * 15),
+      role: 'Allrounder',
+      bowlingStyle: seed > 0.5 ? 'Spinner' : 'Pacer'
+    };
+  } else {
+    return {
+      name,
+      battingRating: Math.floor(15 + seed * 25),
+      bowlingRating: Math.floor(80 + seed * 18),
+      role: 'Bowler',
+      bowlingStyle: seed > 0.5 ? 'Spinner' : 'Pacer'
+    };
   }
+}
+
+// ─── Pitch Type Modifiers ───
+function getPitchType(ground) {
+  const g = (ground || '').toLowerCase();
+  if (g.includes('chinnaswamy') || g.includes('wankhede') || g.includes('rajiv gandhi') || g.includes('hyderabad')) {
+    return 'flat';
+  } else if (g.includes('chidambaram') || g.includes('chennai') || g.includes('ekana') || g.includes('lucknow')) {
+    return 'slow';
+  } else if (g.includes('bindra') || g.includes('mohali') || g.includes('eden') || g.includes('kolkata')) {
+    return 'fast';
+  }
+  return 'balanced';
+}
+
+// ─── Ball Outcome Probabilities ───
+function calculateBallProbabilities(striker, bowler, pitch, overNum, target, currentRuns) {
+  let wDot = 26;
+  let w1 = 36;
+  let w2 = 8;
+  let w4 = 14;
+  let w6 = 6;
+  let wW = 4.2; // Base wicket probability (was 10)
+  
+  const batBonus = (striker.battingRating - 80) / 10;
+  const bowlBonus = (bowler.bowlingRating - 80) / 10;
+  
+  w6 += (batBonus * 1.5) - (bowlBonus * 0.8);
+  w4 += (batBonus * 2.0) - (bowlBonus * 1.0);
+  w1 += (batBonus * 0.5);
+  wW += (bowlBonus * 0.6) - (batBonus * 0.4);
+  wDot += (bowlBonus * 1.0) - (batBonus * 0.8);
+  
+  if (pitch === 'flat') {
+    w6 *= 1.25;
+    w4 *= 1.15;
+    wW *= 0.85;
+  } else if (pitch === 'slow') {
+    wDot *= 1.2;
+    w1 *= 1.05;
+    w6 *= 0.7;
+    wW *= 1.15;
+  } else if (pitch === 'fast') {
+    wW *= 1.1;
+    wDot *= 1.05;
+    w4 *= 1.05;
+  }
+  
+  if (overNum <= 6) {
+    w4 *= 1.2;
+    w6 *= 1.1;
+    wDot *= 0.95;
+    wW *= 0.95;
+  } else if (overNum >= 16) {
+    w6 *= 1.5;
+    w4 *= 1.2;
+    wW *= 1.35;
+    wDot *= 0.85;
+  } else {
+    w1 *= 1.1;
+    w2 *= 1.1;
+    wDot *= 1.05;
+    w6 *= 0.8;
+    wW *= 0.85;
+  }
+  
+  if (target) {
+    const runsNeeded = target - currentRuns;
+    const oversLeft = 20 - overNum + 1;
+    const ballsRemaining = oversLeft * 6;
+    if (ballsRemaining > 0) {
+      const rrr = (runsNeeded / ballsRemaining) * 6;
+      if (rrr > 12) {
+        w6 *= 1.4;
+        w4 *= 1.15;
+        wW *= 1.3;
+        wDot *= 0.85;
+      } else if (rrr < 6) {
+        w1 *= 1.15;
+        w2 *= 1.15;
+        wDot *= 1.1;
+        w6 *= 0.5;
+        w4 *= 0.7;
+        wW *= 0.65;
+      }
+    }
+  }
+  
+  wDot = Math.max(0.5, wDot);
+  w1 = Math.max(0.5, w1);
+  w2 = Math.max(0.5, w2);
+  w4 = Math.max(0.5, w4);
+  w6 = Math.max(0.5, w6);
+  wW = Math.max(0.3, wW);
+  
+  return { '0': wDot, '1': w1, '2': w2, '4': w4, '6': w6, 'W': wW };
+}
+
+function selectOutcome(weights) {
+  const entries = Object.entries(weights);
+  const sum = entries.reduce((acc, [_, w]) => acc + w, 0);
+  let r = Math.random() * sum;
+  for (const [outcome, weight] of entries) {
+    r -= weight;
+    if (r <= 0) return outcome;
+  }
+  return '0';
+}
+
+function selectDismissalType(style) {
+  const r = Math.random();
+  if (style === 'Spinner') {
+    if (r < 0.55) return 'caught';
+    if (r < 0.75) return 'bowled';
+    if (r < 0.90) return 'lbw';
+    if (r < 0.96) return 'caught behind';
+    return 'run out';
+  } else {
+    if (r < 0.50) return 'caught';
+    if (r < 0.72) return 'bowled';
+    if (r < 0.85) return 'caught behind';
+    if (r < 0.95) return 'lbw';
+    return 'run out';
+  }
+}
+
+function selectFielder(bowlingPlayers, bowlerName) {
+  const candidates = bowlingPlayers.filter(p => p.name !== bowlerName);
+  if (candidates.length === 0) return 'fielder';
+  return candidates[Math.floor(Math.random() * candidates.length)].name;
+}
+
+function calculateWinProbability(inningsNum, target, runs, wickets, overNum, runsThisOver) {
+  if (inningsNum === 1) {
+    const parScore = 170;
+    const crr = overNum > 0 ? (runs / overNum) : 8.5;
+    const wicketsLeft = 10 - wickets;
+    const projected = runs + (20 - overNum) * 8.5 * (wicketsLeft / 10);
+    
+    let battingProb = 50 + (projected - parScore) * 0.35 - (wickets * 2.5);
+    battingProb = Math.max(5, Math.min(95, battingProb));
+    return { batting: battingProb, bowling: 100 - battingProb };
+  } else {
+    const runsNeeded = target - runs;
+    if (runsNeeded <= 0) return { batting: 100, bowling: 0 };
+    
+    const oversLeft = 20 - overNum;
+    if (oversLeft === 0) {
+      return runs >= target ? { batting: 100, bowling: 0 } : { batting: 0, bowling: 100 };
+    }
+    
+    const rrr = runsNeeded / oversLeft;
+    const wicketsLeft = 10 - wickets;
+    if (wicketsLeft === 0) return { batting: 0, bowling: 100 };
+    
+    let battingProb = 50 - (rrr - 8.5) * 12.5 + (wicketsLeft - 5) * 7.5;
+    if (overNum >= 17) {
+      battingProb = 50 - (rrr - 8.5) * 18 + (wicketsLeft - 3) * 15;
+    }
+    
+    battingProb = Math.max(1, Math.min(99, battingProb));
+    return { batting: battingProb, bowling: 100 - battingProb };
+  }
+}
+
+function generateOverCommentary(battingTeam, bowlingTeam, bowler, batter, balls, runsThisOver, wickets, wicketDesc, overNum) {
+  const wicketFall = balls.includes('W');
+  
+  const wicketTemplates = [
+    `Drama here! ${bowler} breaks the partnership, sending the batter back. ${wicketDesc}`,
+    `A crucial breakthrough for ${bowlingTeam}! ${bowler} strikes and sets the stadium alight! ${wicketDesc}`,
+    `Huge wicket! ${wicketDesc} ${bowlingTeam} players swarm ${bowler} in celebration.`,
+    `Outstanding bowling! ${wicketDesc} The batting side is under real pressure now.`
+  ];
+  
+  const bigOverTemplates = [
+    `What an expensive over for ${bowlingTeam}! ${batter} targets ${bowler} and hits multiple boundaries. ${runsThisOver} runs off it.`,
+    `Massive over! The batsmen are in full flow here, dealing in boundaries off ${bowler}. ${runsThisOver} runs added.`,
+    `Clean hitting! ${battingTeam} asserts dominance, taking ${runsThisOver} runs off ${bowler}'s over.`,
+    `Expensive from ${bowler}. Short balls punished and boundaries flowing easily. ${runsThisOver} runs.`
+  ];
+  
+  const tidyTemplates = [
+    `Superb over from ${bowler}. Giving away just ${runsThisOver} runs, building massive pressure on ${battingTeam}.`,
+    `Extremely tight bowling by ${bowler}. The batsmen struggle to find gaps. A very tidy over.`,
+    `Excellent variations by ${bowler}. ${battingTeam} could only manage ${runsThisOver} runs from this over.`,
+    `A maiden or near-maiden over. ${bowler} completely dominated the batters.`
+  ];
+  
+  const standardTemplates = [
+    `A steady over for both sides. Strike rotated well. ${runsThisOver} runs off it.`,
+    `${bowler} bowls a decent line, keeping the scoring rate stable. ${runsThisOver} runs added to the total.`,
+    `Overs are ticking away. ${battingTeam} scores ${runsThisOver} runs here as they build towards the end.`,
+    `A balanced over. A few singles and a double. ${runsThisOver} runs off ${bowler}.`
+  ];
+  
+  let pool = standardTemplates;
+  if (wicketFall) {
+    pool = wicketTemplates;
+  } else if (runsThisOver >= 12) {
+    pool = bigOverTemplates;
+  } else if (runsThisOver <= 4) {
+    pool = tidyTemplates;
+  }
+  
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+function runCricketSimulation(room, battingTeam, bowlingTeam, ground, target) {
+  const battingInfo = room.players[room.teamOwners[battingTeam]];
+  const bowlingInfo = room.players[room.teamOwners[bowlingTeam]];
+  if (!battingInfo || !bowlingInfo) return [];
+  
+  const battingXI = battingInfo.xi;
+  const bowlingXI = bowlingInfo.xi;
+  
+  const battingPlayers = battingXI.map((name, i) => getPlayerStats(name, i));
+  const bowlingPlayers = bowlingXI.map((name, i) => getPlayerStats(name, i));
+  
+  const pitch = getPitchType(ground);
+  
+  let runs = 0;
+  let wickets = 0;
+  let strikerIdx = 0;
+  let nonStrikerIdx = 1;
+  let nextBatterIdx = 2;
+  
+  const oversData = [];
+  
+  const bowlersList = bowlingPlayers.slice(5); // indices 5 to 10
+  const oversBowledByPlayer = {};
+  bowlersList.forEach(b => { oversBowledByPlayer[b.name] = 0; });
+  let lastBowlerName = '';
+  
+  function selectBowler(overNum) {
+    const available = bowlersList.filter(b => oversBowledByPlayer[b.name] < 4 && b.name !== lastBowlerName);
+    if (available.length === 0) {
+      return bowlersList.filter(b => b.name !== lastBowlerName)[0] || bowlersList[0];
+    }
+    
+    if (overNum <= 6) {
+      const strike = available.filter(b => b.name === bowlersList[5]?.name || b.name === bowlersList[4]?.name);
+      if (strike.length > 0) return strike[Math.floor(Math.random() * strike.length)];
+    } else if (overNum >= 16) {
+      const strike = available.filter(b => b.name === bowlersList[5]?.name || b.name === bowlersList[4]?.name);
+      if (strike.length > 0) return strike[Math.floor(Math.random() * strike.length)];
+    } else {
+      const spinners = available.filter(b => b.name === bowlersList[0]?.name || b.name === bowlersList[1]?.name || b.name === bowlersList[2]?.name || b.name === bowlersList[3]?.name);
+      if (spinners.length > 0) return spinners[Math.floor(Math.random() * spinners.length)];
+    }
+    
+    available.sort((a, b) => oversBowledByPlayer[a.name] - oversBowledByPlayer[b.name]);
+    return available[0];
+  }
+  
+  for (let overNum = 1; overNum <= 20; overNum++) {
+    if (wickets >= 10) break;
+    if (target && runs >= target) break;
+    
+    const currentBowler = selectBowler(overNum);
+    oversBowledByPlayer[currentBowler.name]++;
+    lastBowlerName = currentBowler.name;
+    
+    const overBalls = [];
+    let runsThisOver = 0;
+    let wicketDescThisOver = '';
+    
+    for (let ballNum = 1; ballNum <= 6; ballNum++) {
+      if (wickets >= 10) break;
+      if (target && runs >= target) break;
+      
+      const striker = battingPlayers[strikerIdx];
+      const outcome = selectOutcome(calculateBallProbabilities(striker, currentBowler, pitch, overNum, target, runs));
+      
+      overBalls.push(outcome);
+      
+      if (outcome === 'W') {
+        wickets++;
+        const style = currentBowler.bowlingStyle;
+        const dismissal = selectDismissalType(style);
+        const fielder = selectFielder(bowlingPlayers, currentBowler.name);
+        
+        if (dismissal === 'bowled') wicketDescThisOver = `${striker.name} clean bowled by ${currentBowler.name}!`;
+        else if (dismissal === 'lbw') wicketDescThisOver = `${striker.name} lbw b ${currentBowler.name}!`;
+        else if (dismissal === 'caught') wicketDescThisOver = `${striker.name} caught by ${fielder} off ${currentBowler.name}!`;
+        else if (dismissal === 'caught behind') wicketDescThisOver = `${striker.name} caught behind off ${currentBowler.name}!`;
+        else wicketDescThisOver = `${striker.name} run out (${fielder})!`;
+        
+        if (wickets < 10) {
+          strikerIdx = nextBatterIdx;
+          nextBatterIdx++;
+        }
+      } else {
+        const ballRuns = parseInt(outcome);
+        runs += ballRuns;
+        runsThisOver += ballRuns;
+        if (ballRuns === 1 || ballRuns === 3) {
+          const temp = strikerIdx;
+          strikerIdx = nonStrikerIdx;
+          nonStrikerIdx = temp;
+        }
+      }
+    }
+    
+    if (wickets < 10 && !(target && runs >= target)) {
+      const temp = strikerIdx;
+      strikerIdx = nonStrikerIdx;
+      nonStrikerIdx = temp;
+    }
+    
+    const winProbability = calculateWinProbability(target ? 2 : 1, target, runs, wickets, overNum, runsThisOver);
+    const commentary = generateOverCommentary(
+      battingTeam, bowlingTeam, currentBowler.name, 
+      battingPlayers[strikerIdx]?.name || 'Batter', 
+      overBalls, runsThisOver, wickets, wicketDescThisOver, overNum
+    );
+    
+    oversData.push({
+      over: overNum,
+      bowler: currentBowler.name,
+      batter: battingPlayers[strikerIdx]?.name || 'Batter',
+      nonStriker: battingPlayers[nonStrikerIdx]?.name || 'Non-Striker',
+      balls: overBalls,
+      wicketDesc: wicketDescThisOver,
+      runsScoredThisOver: runsThisOver,
+      totalScore: `${runs}/${wickets}`,
+      totalOvers: `${overNum}.0`,
+      commentary: commentary,
+      winProbability: winProbability
+    });
+  }
+  
+  return oversData;
+}
+
+// ─── Offline Match Simulation ───
+async function simulateInnings(room, battingTeam, bowlingTeam, ground, target, inningsNum, matchContext, startOver, endOver) {
+  const match = room.currentMatch;
+  if (!match) return null;
+  
+  let allOversData;
+  if (inningsNum === 1) {
+    if (!match.innings1Data) {
+      match.innings1Data = runCricketSimulation(room, battingTeam, bowlingTeam, ground, null);
+    }
+    allOversData = match.innings1Data;
+  } else {
+    if (!match.innings2Data) {
+      match.innings2Data = runCricketSimulation(room, battingTeam, bowlingTeam, ground, target);
+    }
+    allOversData = match.innings2Data;
+  }
+  
+  const sliced = allOversData.filter(o => o.over >= startOver && o.over <= endOver);
+  return JSON.stringify(sliced);
 }
 
 function parseInningsResult(rawText) {
@@ -279,10 +627,11 @@ io.on('connection', (socket) => {
   });
 
   // POST-TOSS LINEUP UPDATE
-  socket.on('update-lineup', ({ xi }) => {
+  socket.on('update-lineup', ({ xi, impact }) => {
     const room = rooms[socket.roomCode];
     if (!room) return;
     room.players[socket.id].xi = xi;
+    if (impact) room.players[socket.id].impact = impact;
     socket.emit('lineup-updated', { xi });
   });
 
@@ -477,8 +826,16 @@ async function startInnings(code, inningsNum) {
     match.result = resultText;
     match.winner = winner;
     updatePointsTable(room.pointsTable, winner, loser,
-      { runs: winner === match.battingFirst ? match.innings1Runs : result.runs, overs: winner === match.battingFirst ? match.innings1Overs : result.oversCount },
-      { runs: loser === match.battingFirst ? match.innings1Runs : result.runs, overs: loser === match.battingFirst ? match.innings1Overs : result.oversCount }
+      { 
+        runs: winner === match.battingFirst ? match.innings1Runs : currentRuns, 
+        overs: winner === match.battingFirst ? match.innings1Overs : currentOversCount,
+        allOut: winner === match.battingFirst ? (match.innings1Wickets >= 10) : (currentWickets >= 10)
+      },
+      { 
+        runs: loser === match.battingFirst ? match.innings1Runs : currentRuns, 
+        overs: loser === match.battingFirst ? match.innings1Overs : currentOversCount,
+        allOut: loser === match.battingFirst ? (match.innings1Wickets >= 10) : (currentWickets >= 10)
+      }
     );
     room.currentMatchIdx++;
     room.matchResults.push({ num: match.num, teamA: match.teamA, teamB: match.teamB, result: resultText, winner });
@@ -487,7 +844,7 @@ async function startInnings(code, inningsNum) {
       result: resultText,
       winner,
       innings1: { team: match.battingFirst, score: match.innings1Score },
-      innings2: { team: battingTeam, score: result.score },
+      innings2: { team: battingTeam, score: currentScoreStr },
       pointsTable: getSortedTable(room.pointsTable),
       matchResults: room.matchResults,
       hasNextMatch: room.currentMatchIdx < room.schedule.length,

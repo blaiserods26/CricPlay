@@ -68,8 +68,6 @@ function renderPreviews() {
 
 $('#btnExtract').onclick = async () => {
   if(!uploadedImages.length) return toast('Upload images first','error');
-  const key=$('#geminiKey').value.trim();
-  if(!key) return toast('Enter Gemini API key','error');
   const name=localStorage.getItem('cp_name')||'Player';
   $('#btnExtract').disabled=true; $('#btnExtract').textContent='Extracting...';
   $('#ocrProgress').style.display='block'; $('#progressFill').style.width='0%';
@@ -88,7 +86,7 @@ $('#btnExtract').onclick = async () => {
     await worker.terminate();
     renderExtractedTeams();
     if(Object.keys(extractedTeams).length>=2){
-      socket.emit('create-room',{playerName:name,geminiKey:key,teams:extractedTeams});
+      socket.emit('create-room',{playerName:name,geminiKey:'',teams:extractedTeams});
     } else toast('Need at least 2 teams. Upload more images.','error');
   } catch(e){console.error(e);toast('OCR failed','error');}
   finally{$('#btnExtract').disabled=false;$('#btnExtract').textContent='Extract Teams & Create Room';$('#ocrProgress').style.display='none';}
@@ -183,3 +181,60 @@ function renderTeamCards(teams, taken={}) {
 }
 
 $('#btnConfirmTeams').onclick = () => socket.emit('confirm-teams');
+
+$('#btnDefaultTeams').onclick = () => {
+  const name = localStorage.getItem('cp_name') || 'Player';
+  const defaultSquads = {
+    'Chennai Super Kings': [
+      'Ruturaj Gaikwad', 'Rachin Ravindra', 'Ajinkya Rahane', 'Daryl Mitchell', 'Shivam Dube',
+      'Ravindra Jadeja', 'MS Dhoni', 'Mitchell Santner', 'Shardul Thakur', 'Deepak Chahar',
+      'Mustafizur Rahman', 'Tushar Deshpande', 'Matheesha Pathirana', 'Sameer Rizvi', 'Devon Conway'
+    ],
+    'Royal Challengers Bengaluru': [
+      'Virat Kohli', 'Faf du Plessis', 'Rajat Patidar', 'Glenn Maxwell', 'Cameron Green',
+      'Dinesh Karthik', 'Mahipal Lomror', 'Will Jacks', 'Anuj Rawat', 'Karn Sharma',
+      'Mohammed Siraj', 'Yash Dayal', 'Lockie Ferguson', 'Mayank Dagar', 'Alzarri Joseph'
+    ],
+    'Mumbai Indians': [
+      'Rohit Sharma', 'Ishan Kishan', 'Suryakumar Yadav', 'Tilak Varma', 'Hardik Pandya',
+      'Tim David', 'Romario Shepherd', 'Gerald Coetzee', 'Jasprit Bumrah', 'Akash Madhwal',
+      'Piyush Chawla', 'Naman Dhir', 'Nehal Wadhera', 'Nuwan Thushara', 'Mohammad Nabi'
+    ],
+    'Kolkata Knight Riders': [
+      'Phil Salt', 'Sunil Narine', 'Angkrish Raghuvanshi', 'Shreyas Iyer', 'Venkatesh Iyer',
+      'Rinku Singh', 'Andre Russell', 'Ramandeep Singh', 'Mitchell Starc', 'Harshit Rana',
+      'Varun Chakaravarthy', 'Suyash Sharma', 'Vaibhav Arora', 'Manish Pandey', 'Rahmanullah Gurbaz'
+    ],
+    'Rajasthan Royals': [
+      'Yashasvi Jaiswal', 'Jos Butter', 'Sanju Samson', 'Riyan Parag', 'Dhruv Jurel',
+      'Shimron Hetmyer', 'Ravichandran Ashwin', 'Trent Boult', 'Avesh Khan', 'Sandeep Sharma',
+      'Yuzvendra Chahal', 'Rovman Powell', 'Nandre Burger', 'Tanush Kotian', 'Keshav Maharaj'
+    ],
+    'Sunrisers Hyderabad': [
+      'Travis Head', 'Abhishek Sharma', 'Aiden Markram', 'Heinrich Klaasen', 'Nitish Kumar Reddy',
+      'Abdul Samad', 'Shahbaz Ahmed', 'Pat Cummins', 'Bhuvneshwar Kumar', 'Jaydev Unadkat',
+      'T Natarajan', 'Mayank Markande', 'Umran Malik', 'Glenn Phillips', 'Washington Sundar'
+    ],
+    'Delhi Capitals': [
+      'Prithvi Shaw', 'Jake Fraser-McGurk', 'Abishek Porel', 'Shai Hope', 'Rishabh Pant',
+      'Tristan Stubbs', 'Axar Patel', 'Kuldeep Yadav', 'Khaleel Ahmed', 'Mukesh Kumar',
+      'Ishant Sharma', 'Anrich Nortje', 'Jhye Richardson', 'Lalit Yadav', 'Kumar Kushagra'
+    ],
+    'Punjab Kings': [
+      'Shikhar Dhawan', 'Jonny Bairstow', 'Prabhsimran Singh', 'Sam Curran', 'Jitesh Sharma',
+      'Liam Livingstone', 'Shashank Singh', 'Ashutosh Sharma', 'Harpreet Brar', 'Harshal Patel',
+      'Kagiso Rabada', 'Arshdeep Singh', 'Rahul Chahar', 'Nathan Ellis', 'Vidwath Kaverappa'
+    ],
+    'Gujarat Titans': [
+      'Shubman Gill', 'Sai Sudharsan', 'Kane Williamson', 'Sharath BR', 'Vijay Shankar',
+      'Rahul Tewatia', 'Rashid Khan', 'Umesh Yadav', 'Spencer Johnson', 'Mohit Sharma',
+      'Noor Ahmad', 'Darshan Nalkande', 'David Miller', 'Shahrukh Khan', 'Sai Kishore'
+    ],
+    'Lucknow Super Giants': [
+      'KL Rahul', 'Quinton de Kock', 'Devdutt Padikkal', 'Marcus Stoinis', 'Nicholas Pooran',
+      'Ayush Badoni', 'Krunal Pandya', 'Ravi Bishnoi', 'Yash Thakur', 'Naveen-ul-Haq',
+      'Mayank Yadav', 'Amit Mishra', 'Mohsin Khan', 'Shamar Joseph', 'Arshad Khan'
+    ]
+  };
+  socket.emit('create-room', { playerName: name, geminiKey: '', teams: defaultSquads });
+};

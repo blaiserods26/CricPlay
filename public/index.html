@@ -66,12 +66,7 @@
           <div class="step-badge">1</div>
           <div><h2>Create Room</h2><p class="section-desc">Upload squad screenshots and configure the game.</p></div>
         </div>
-        <div class="config-row">
-          <div class="input-group">
-            <label for="geminiKey">Gemini API Key</label>
-            <input type="password" id="geminiKey" placeholder="Enter your Gemini API key" />
-          </div>
-        </div>
+        <!-- Removed Gemini API Key Configuration as simulation is run locally -->
         <div class="upload-zone" id="uploadZone">
           <input type="file" id="imageInput" accept="image/*" multiple />
           <div class="upload-icon"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></div>
@@ -88,7 +83,8 @@
           <h3>Extracted Teams</h3>
           <div class="teams-grid" id="teamsGrid"></div>
         </div>
-        <button class="btn btn-primary btn-lg btn-extract" id="btnExtract" style="display:none;">Extract Teams & Create Room</button>
+        <button class="btn btn-primary btn-extract" id="btnExtract">Extract Teams & Create Room</button>
+        <button class="btn btn-secondary" id="btnDefaultTeams" style="width: 100%; margin-top: 10px; justify-content: center; display: inline-flex; align-items: center; gap: 8px;">🎮 Use Default IPL Squads</button>
       </div>
     </div>
 
@@ -146,6 +142,7 @@
             <div class="lineup-slots" id="sbImpSlots"></div>
           </div>
         </div>
+        <button class="btn btn-secondary btn-lg" id="btnAutofillSquad" style="margin-right: 10px; display: inline-flex; align-items: center; gap: 6px;">⚡ Auto Fill</button>
         <button class="btn btn-primary btn-lg" id="btnSubmitSquad">Lock Squad & Ready Up ✓</button>
         <div class="waiting-others" id="waitingOthers" style="display:none;">
           <div class="spinner"></div>
@@ -194,6 +191,18 @@
               <div class="score-vs">vs</div>
               <div class="score-team" id="scoreTeamB"></div>
             </div>
+            <!-- Win Probability Meter -->
+            <div class="win-probability-container" id="winProbContainer" style="display: none;">
+              <div class="win-prob-label">Win Probability</div>
+              <div class="win-prob-bar-wrapper">
+                <div class="win-prob-bar batting-team-bar" id="winProbBattingBar" style="width: 50%;"></div>
+                <div class="win-prob-bar bowling-team-bar" id="winProbBowlingBar" style="width: 50%;"></div>
+              </div>
+              <div class="win-prob-percentages">
+                <span id="winProbBattingText">50%</span>
+                <span id="winProbBowlingText">50%</span>
+              </div>
+            </div>
             <div class="innings-label" id="inningsLabel"></div>
             <div class="commentary-feed" id="commentaryFeed"></div>
           </div>
@@ -219,6 +228,10 @@
               <h2 id="resultText"></h2>
               <div class="result-scores" id="resultScores"></div>
               <button class="btn btn-primary btn-lg" id="btnNextMatch" style="display:none;">Next Match →</button>
+              <div id="waitingNextMatch" style="display:none; color:var(--text3); font-style:italic; margin-top:15px; font-size: 1.1rem; align-items: center; justify-content: center; gap: 10px;">
+                <div style="width:16px; height:16px; border:2px solid var(--text3); border-top-color:transparent; border-radius:50%; animation:spin 0.8s linear infinite;"></div>
+                Waiting for host to start next match...
+              </div>
             </div>
           </div>
           <!-- Tournament Complete -->

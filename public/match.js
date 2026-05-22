@@ -51,6 +51,16 @@ function renderSquadBuild(){
 
 $('#sbSearch').oninput = renderSquadBuild;
 
+$('#btnAutofillSquad').onclick = () => {
+  if (!mySquad || !mySquad.length) return;
+  mySquad.forEach((p, idx) => {
+    if (idx < 11) p.status = 'xi';
+    else if (idx < 14) p.status = 'impact';
+    else p.status = 'available';
+  });
+  renderSquadBuild();
+};
+
 $('#btnSubmitSquad').onclick = () => {
   const xi=mySquad.filter(p=>p.status==='xi').map(p=>p.name);
   const impact=mySquad.filter(p=>p.status==='impact').map(p=>({name:p.name,role:'batting'}));
@@ -62,6 +72,7 @@ $('#btnSubmitSquad').onclick = () => {
 
 // ─── Match Day ───
 let currentSchedule=[], currentPointsTable=[], matchScoreA='', matchScoreB='';
+let currentBattingTeam='', currentBowlingTeam='';
 
 socket.on('schedule-ready', ({schedule, pointsTable}) => {
   currentSchedule=schedule; currentPointsTable=pointsTable;
@@ -86,31 +97,91 @@ socket.on('match-toss', ({match, toss, battingFirst, bowlingFirst, pointsTable})
   }
 });
 
+function swapTossLineup(slotIdx, newPlayerName) {
+  const oldPlayerName = myXI[slotIdx];
+  if (oldPlayerName === newPlayerName) return;
+
+  const existingIdx = myXI.indexOf(newPlayerName);
+  if (existingIdx >= 0) {
+    myXI[slotIdx] = newPlayerName;
+    myXI[existingIdx] = oldPlayerName;
+  } else {
+    myXI[slotIdx] = newPlayerName;
+    const oldSquadPlayer = mySquad.find(p => p.name === oldPlayerName);
+    const newSquadPlayer = mySquad.find(p => p.name === newPlayerName);
+    if (oldSquadPlayer && newSquadPlayer) {
+      const newStatus = newSquadPlayer.status;
+      newSquadPlayer.status = 'xi';
+      oldSquadPlayer.status = newStatus;
+    }
+  }
+  renderTossLineup();
+}
+
 function renderTossLineup(){
   const c=$('#tossXISlots'); c.innerHTML='';
-  myXI.forEach((name,i)=>{const d=document.createElement('div');d.className='lineup-slot filled';
-  d.innerHTML=`<span class="slot-number">${i+1}</span><span class="slot-player-name">${name}</span>`;
-  c.appendChild(d);});
+  myXI.forEach((name,i)=>{
+    const d=document.createElement('div');
+    d.className='lineup-slot filled';
+    d.style.display = 'flex';
+    d.style.alignItems = 'center';
+    d.style.gap = '10px';
+    d.style.marginBottom = '8px';
+    
+    let selectHTML = `<select class="toss-player-select" data-slot="${i}" style="flex: 1; padding: 8px 12px; border-radius: 6px; background: var(--bg2); color: var(--text1); border: 1px solid var(--border); font-size: 0.95rem;">`;
+    mySquad.forEach(p => {
+      const isSelected = p.name === name;
+      selectHTML += `<option value="${p.name}" ${isSelected ? 'selected' : ''}>${p.name} (${p.status.toUpperCase()})</option>`;
+    });
+    selectHTML += `</select>`;
+    
+    d.innerHTML=`<span class="slot-number">${i+1}</span>${selectHTML}`;
+    d.querySelector('.toss-player-select').onchange = (e) => {
+      swapTossLineup(i, e.target.value);
+    };
+    c.appendChild(d);
+  });
 }
 
 $('#btnConfirmLineup').onclick = () => {
-  socket.emit('update-lineup',{xi:myXI});
+  const impact = mySquad.filter(p=>p.status==='impact').map(p=>({name:p.name,role:'batting'}));
+  socket.emit('update-lineup',{xi:myXI, impact});
   socket.emit('confirm-lineup');
   $('#lineupEdit').style.display='none'; $('#waitingToss').style.display='block';
 };
 
 socket.on('innings-start', ({inningsNum, battingTeam, bowlingTeam, target}) => {
+  currentBattingTeam=battingTeam;
+  currentBowlingTeam=bowlingTeam;
   hideAllPhases(); $('#phaseLive').style.display='block';
   $('#commentaryFeed').innerHTML='';
   $('#inningsLabel').textContent=`${inningsNum===1?'1st':'2nd'} Innings — ${battingTeam} batting`;
   $('#scoreTeamA').innerHTML=`<div class="st-name">${battingTeam}</div><div class="st-score" id="liveScore">0/0</div><div class="st-overs" id="liveOvers">0.0 ov</div>`;
   $('#scoreTeamB').innerHTML=`<div class="st-name">${bowlingTeam}</div><div class="st-score">${target?'Target: '+(target):'Bowling'}</div><div class="st-overs">&nbsp;</div>`;
+  
+  // Set up Win Probability UI
+  $('#winProbContainer').style.display = 'block';
+  $('#winProbBattingBar').style.width = '50%';
+  $('#winProbBowlingBar').style.width = '50%';
+  $('#winProbBattingText').textContent = `${battingTeam} 50%`;
+  $('#winProbBowlingText').textContent = `50% ${bowlingTeam}`;
 });
 
 socket.on('over-update', ({inningsNum, over, overIndex}) => {
   $('#liveScore').textContent=over.totalScore||'0/0';
   $('#liveOvers').textContent=(over.totalOvers||'0.0')+' ov';
   if(inningsNum===1) matchScoreA=over.totalScore; else matchScoreB=over.totalScore;
+  
+  // Update Win Probability
+  if (over.winProbability) {
+    const batPct = Math.round(over.winProbability.batting);
+    const bowlPct = Math.round(over.winProbability.bowling);
+    $('#winProbBattingBar').style.width = `${batPct}%`;
+    $('#winProbBowlingBar').style.width = `${bowlPct}%`;
+    $('#winProbBattingText').textContent = `${currentBattingTeam} ${batPct}%`;
+    $('#winProbBowlingText').textContent = `${bowlPct}% ${currentBowlingTeam}`;
+  }
+
   const feed=$('#commentaryFeed');
   const block=document.createElement('div'); block.className='over-block';
   const balls=(over.balls||[]).map(b=>{
@@ -167,7 +238,18 @@ socket.on('match-result', ({result, winner, innings1, innings2, pointsTable, mat
   hideAllPhases(); $('#phaseResult').style.display='block';
   $('#resultText').textContent=result;
   $('#resultScores').innerHTML=`${innings1.team}: <strong>${innings1.score}</strong> &nbsp;|&nbsp; ${innings2.team}: <strong>${innings2.score}</strong>`;
-  if(hasNextMatch&&isHost) $('#btnNextMatch').style.display='inline-flex'; else $('#btnNextMatch').style.display='none';
+  if(hasNextMatch){
+    if(isHost){
+      $('#btnNextMatch').style.display='inline-flex';
+      $('#waitingNextMatch').style.display='none';
+    } else {
+      $('#btnNextMatch').style.display='none';
+      $('#waitingNextMatch').style.display='inline-flex';
+    }
+  } else {
+    $('#btnNextMatch').style.display='none';
+    $('#waitingNextMatch').style.display='none';
+  }
 });
 
 $('#btnNextMatch').onclick = () => { socket.emit('next-match'); $('#btnNextMatch').style.display='none'; };
